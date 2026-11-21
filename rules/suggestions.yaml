@@ -1,0 +1,6 @@
+# Planned (not yet read by ventry v0.1): signal -> suggestion map for session-start hints.
+# Keep rules simple and deterministic; one nudge per item per session.
+rules: []
+# Example shape:
+# - when: { file_exists: ["*.sql", "docker-compose.yml"] }
+#   suggest: { kind: mcp, name: postgres, reason: "database project detected" }

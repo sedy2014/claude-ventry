@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ventry",
+  "displayName": "ventry",
+  "version": "0.1.0",
+  "description": "Inventory of your Claude Code hooks, plugins, MCP servers, skills, slash commands and subagents, exported as Obsidian-friendly markdown with usage counts from local transcripts.",
+  "author": {
+    "name": "Sidharth Mahotra",
+    "url": "https://www.linkedin.com/in/sidharthmahotra"
+  },
+  "homepage": "https://github.com/sedy2014/claude-ventry",
+  "repository": "https://github.com/sedy2014/claude-ventry",
+  "license": "MIT",
+  "keywords": ["inventory", "audit", "hooks", "plugins", "mcp", "skills", "obsidian", "usage"]
+}

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.ventry-cache.json
+.DS_Store
+.claude/
+.codegraph/
+.obsidian/
+.vincent/
+.vscode/
+no_committ/
