@@ -202,6 +202,14 @@ class TestPlugins(FakeClaude):
         self.assertIsNone(rows[0]["enabled"])
         self.assertEqual(rows[0]["path"], str(bucket / "abc-123"))
 
+    def test_plugin_description_is_read_from_its_manifest(self):
+        pdir = self.root / "a"
+        write_json(pdir / ".claude-plugin" / "plugin.json", {"name": "a", "description": "Does A"})
+        write_json(self.cdir / "plugins" / "installed_plugins.json",
+                   {"plugins": {"a@m": [{"installPath": str(pdir)}], "b@m": [{"installPath": "/nowhere"}]}})
+        rows = {r["name"]: r["desc"] for r in ventry.collect_plugins(self.cdir, self.cwd)}
+        self.assertEqual(rows, {"a": "Does A", "b": ""})
+
     def test_synced_plugin_missing_folder_is_skipped(self):
         bucket = self.cdir / "plugins" / "synced" / "bucket1"
         write_json(bucket / "manifest.json", {"plugins": [{"name": "gone"}]})
@@ -304,6 +312,7 @@ class TestScanTranscripts(FakeClaude):
         self.assertEqual(t["skill:demo"]["count"], 2)
         self.assertEqual(t["skill:demo"]["last"], "2026-11-19T10:00:00Z")
         self.assertEqual(t["mcp:plugin_marketing_notion"]["count"], 1)
+        self.assertEqual(t["mcptool:plugin_marketing_notion/notion-search"]["count"], 1)
         self.assertEqual(t["agent:Explore"]["count"], 1)
         self.assertEqual(t["agent:general-purpose"]["count"], 1)
         self.assertEqual(t["cmd:hello"]["count"], 2)
@@ -523,6 +532,24 @@ class TestBuild(FakeClaude):
         self.run_build()  # second run must not refuse its own notes
         self.assertTrue((self.out / "claude-code-inventory.md").is_file())
 
+    def test_descriptions_for_plugins_and_mcp_servers(self):
+        pdir = self.root / "mkt"
+        write_json(pdir / ".claude-plugin" / "plugin.json", {"name": "mkt", "description": "Marketing helpers"})
+        write_json(pdir / ".mcp.json", {"mcpServers": {"slack": {"type": "http", "url": "https://s"}}})
+        write_json(self.cdir / "plugins" / "installed_plugins.json",
+                   {"plugins": {"mkt@m": [{"scope": "user", "installPath": str(pdir)}]}})
+        write_json(self.cdir / ".claude.json", {"mcpServers": {"github": {"command": "gh-mcp"}}})
+        with open(self.cdir / "projects" / "p1" / "t.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(tool_use("mcp__github__search_code", {}) + "\n")
+            fh.write(tool_use("mcp__github__search_code", {}) + "\n")
+            fh.write(tool_use("mcp__github__get_issue", {}) + "\n")
+        self.run_build()
+        plugins = (self.out / "plugins.md").read_text(encoding="utf-8")
+        self.assertIn("| mkt | Marketing helpers |", plugins)
+        mcp = (self.out / "mcp-servers.md").read_text(encoding="utf-8")
+        self.assertIn("| github | user | tools used: search_code, get_issue |", mcp)   # most used first
+        self.assertIn("| slack | plugin:mkt | from plugin: Marketing helpers |", mcp)  # unused: plugin's text
+
     def test_notes_use_lf_line_endings(self):
         self.run_build()
         self.assertNotIn(b"\r\n", (self.out / "claude-code-inventory.md").read_bytes())
@@ -565,7 +592,7 @@ class TestBrokenConfigEndToEnd(FakeClaude):
         self.assertIn("`echo hi`", hooks)
         self.assertNotIn("oops", hooks)
         plugins = (out / "plugins.md").read_text(encoding="utf-8")
-        self.assertIn("| a | b |", plugins)
+        self.assertIn("| a |  | b |", plugins)   # name, empty description, marketplace
 
 
 # --------------------------------------------------------------- throttling

@@ -175,6 +175,21 @@ def collect_hooks(cdir, cwd, plugins):
     return rows
 
 
+def plugin_desc(path):
+    """The "description" from a plugin's own .claude-plugin/plugin.json, or ""."""
+    if not path:
+        return ""
+    d = mapping(read_json(Path(path) / ".claude-plugin" / "plugin.json")).get("description")
+    return d if isinstance(d, str) else ""
+
+
+def mcp_tools(totals, recorded):
+    """Tools used on one MCP server, most used first, from mcptool: totals."""
+    prefix = "mcptool:" + recorded + "/"
+    used = [(v["count"], k[len(prefix):]) for k, v in totals.items() if k.startswith(prefix)]
+    return [t for _, t in sorted(used, key=lambda x: (-x[0], x[1]))]
+
+
 def collect_plugins(cdir, cwd):
     """List installed plugins, from two places.
 
@@ -221,6 +236,7 @@ def collect_plugins(cdir, cwd):
                     "enabled": enabled.get(key, None),
                     "path": path if isinstance(path, str) and "\x00" not in path else "",
                 })
+                out[-1]["desc"] = plugin_desc(out[-1]["path"])
     # Account-synced plugins live in plugins/synced/<bucket>/<manifest name>/
     # and are not listed in installed_plugins.json.
     try:
@@ -252,6 +268,7 @@ def collect_plugins(cdir, cwd):
                 "scope": "synced",
                 "enabled": None,  # synced plugins have no enabledPlugins entry
                 "path": str(pdir),
+                "desc": meta.get("description") if isinstance(meta.get("description"), str) else "",
             })
     return out
 
@@ -332,7 +349,7 @@ COMMAND_MESSAGE_RE = re.compile(r"<command-message>[^<]*</command-message>")
 COMMAND_NAME_RE = re.compile(r"<command-name>/?([^<>\s]+)</command-name>")
 
 # Version 3 counts only the command record's own name.
-CACHE_VERSION = 3
+CACHE_VERSION = 4  # 4 adds per-tool MCP counts (mcptool:<server>/<tool>)
 
 
 def command_names(text):
@@ -430,6 +447,7 @@ def scan_transcripts(cdir, use_cache=True, out_dir=None):
                                     if not isinstance(blk, dict):
                                         continue
                                     if blk.get("type") == "tool_use":
+                                        extra_keys = []
                                         n = blk.get("name", "")
                                         if not isinstance(n, str):
                                             continue
@@ -441,7 +459,13 @@ def scan_transcripts(cdir, use_cache=True, out_dir=None):
                                             # the part between the first two "__".
                                             # Plugin servers appear as
                                             # plugin_<plugin>_<server> (see usage_for).
-                                            k = "mcp:" + n.split("__")[1]
+                                            parts = n.split("__")
+                                            k = "mcp:" + parts[1]
+                                            # Also count the tool itself, so the
+                                            # notes can say what a server is used for.
+                                            tool = "__".join(parts[2:])
+                                            if tool:
+                                                extra_keys.append("mcptool:" + parts[1] + "/" + tool)
                                         elif n == "Skill":
                                             # The Skill tool's input names the skill.
                                             skill = inp.get("skill", inp.get("command", "?"))
@@ -457,10 +481,11 @@ def scan_transcripts(cdir, use_cache=True, out_dir=None):
                                             k = "agent:" + agent
                                         else:
                                             continue  # any other tool: not counted
-                                        c = counts.setdefault(k, {"count": 0, "last": ""})
-                                        c["count"] += 1
-                                        if ts > c["last"]:
-                                            c["last"] = ts
+                                        for kk in [k] + extra_keys:
+                                            c = counts.setdefault(kk, {"count": 0, "last": ""})
+                                            c["count"] += 1
+                                            if ts > c["last"]:
+                                                c["last"] = ts
                                     elif is_user and blk.get("type") == "text" and isinstance(blk.get("text"), str):
                                         for m in command_names(blk["text"]):
                                             c = counts.setdefault("cmd:" + m, {"count": 0, "last": ""})
@@ -603,15 +628,25 @@ def build(args):
     # plugins
     prow = []
     for p in plugins:
-        prow.append([p["name"], p["marketplace"], p["version"], p["scope"],
+        prow.append([p["name"], short(p.get("desc", "")), p["marketplace"], p["version"], p["scope"],
                      {True: "yes", False: "no", None: "?"}[p["enabled"]]])
+    plugin_descs = {p["name"]: p.get("desc", "") for p in plugins}
     # hooks (fire counts are not in transcripts; list only)
     hrow = [[h["source"], h["event"], h["matcher"], h["type"], "`" + short(h["command"], 80) + "`"] for h in hooks]
     # mcp
     mrow = []
     for m in mcp:
         c, last = u("mcp", m)
-        mrow.append([m["name"], m["source"], m["transport"], short(m["target"], 50), c, last])
+        # What it is for: the tools you actually called on it (from your
+        # transcripts), else the description of the plugin that provides it.
+        tools = mcp_tools(totals, recorded_name("mcp", m))
+        if tools:
+            desc = "tools used: " + ", ".join(tools[:4]) + (" …" if len(tools) > 4 else "")
+        elif m["source"].startswith("plugin:") and plugin_descs.get(m["source"][len("plugin:"):]):
+            desc = "from plugin: " + plugin_descs[m["source"][len("plugin:"):]]
+        else:
+            desc = ""
+        mrow.append([m["name"], m["source"], short(desc), m["transport"], short(m["target"], 50), c, last])
         if not args.no_usage and c == 0:
             unused.append(("MCP server", m["name"], m["source"]))
     # skills
@@ -640,9 +675,9 @@ def build(args):
     ug = "Usage = calls found in local transcripts under `projects/`.\n\n"
     hug = "Hook firings are not recorded in transcripts, so hooks are listed without counts. Use `claude --debug` to watch them fire.\n\n"
     files = {
-        "plugins.md": note("Plugins", "plugins", now, table(["plugin", "marketplace", "version", "scope", "enabled"], prow), {"count": len(prow)}),
+        "plugins.md": note("Plugins", "plugins", now, table(["plugin", "description", "marketplace", "version", "scope", "enabled"], prow), {"count": len(prow)}),
         "hooks.md": note("Hooks", "hooks", now, hug + table(["source", "event", "matcher", "type", "command"], hrow), {"count": len(hrow)}),
-        "mcp-servers.md": note("MCP servers", "mcp", now, ug + table(["server", "source", "transport", "target", "calls", "last used"], mrow), {"count": len(mrow)}),
+        "mcp-servers.md": note("MCP servers", "mcp", now, ug + table(["server", "source", "description", "transport", "target", "calls", "last used"], mrow), {"count": len(mrow)}),
         "skills.md": note("Skills", "skills", now, ug + table(["skill", "source", "description", "calls", "last used"], srow), {"count": len(srow)}),
         "commands.md": note("Slash commands", "commands", now, ug + table(["command", "source", "description", "uses", "last used"], crow), {"count": len(crow)}),
         "agents.md": note("Subagents", "agents", now, ug + table(["agent", "source", "description", "calls", "last used"], arow), {"count": len(arow)}),
