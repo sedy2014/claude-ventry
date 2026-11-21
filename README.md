@@ -35,6 +35,17 @@ Local testing before publishing: `/plugin marketplace add C:\repos\ventry`
 
 Set `VENTRY_OUT` to change the default output folder.
 
+### Per-project snapshots
+
+Project settings (a project's hooks, `.mcp.json`, skills and commands) differ from project to project, but the main notes show only the project that ran last. Add `--per-project` to also keep a snapshot for each project:
+
+```text
+~/.claude/ventry/                          latest overall view
+~/.claude/ventry/projects/<name>-<id>/     one folder per project
+```
+
+`<id>` is a short hash of the project's full path, so two projects with the same folder name stay apart. Links inside a snapshot point to that snapshot's own notes. The SessionStart hook uses `--per-project`, with its own 6-hour timer per project, so a new project gets its snapshot at its first session. On demand: `/ventry:ventry --per-project`.
+
 ## Privacy
 
 ventry only reads local files (`~/.claude/settings.json`, project `.claude/`, plugin folders, `~/.claude/projects/*.jsonl`). It extracts tool *names* and slash-command names only, never prompt or code content, and it makes **no network calls**.

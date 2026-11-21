@@ -550,6 +550,30 @@ class TestBuild(FakeClaude):
         self.assertIn("| github | user | tools used: search_code, get_issue |", mcp)   # most used first
         self.assertIn("| slack | plugin:mkt | from plugin: Marketing helpers |", mcp)  # unused: plugin's text
 
+    def test_per_project_writes_main_notes_and_a_project_snapshot(self):
+        args = args_for(self.cwd, self.out)
+        args.per_project = True
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.cdir)}):
+            out, folders, _ = ventry.build(args)
+        slug = ventry.project_slug(self.cwd)
+        snap = self.out / "projects" / slug
+        self.assertEqual(folders, [self.out, snap])
+        for folder in folders:
+            for name in ("claude-code-inventory", "plugins", "hooks", "mcp-servers", "skills", "commands", "agents"):
+                self.assertTrue((folder / f"{name}.md").is_file(), (folder, name))
+            self.assertTrue((folder / ".last-run").is_file())
+        # Main summary keeps plain links; the snapshot links inside its own folder.
+        self.assertIn("| [[skills]] | 2 |", (self.out / "claude-code-inventory.md").read_text(encoding="utf-8"))
+        self.assertIn(f"| [[projects/{slug}/skills\\|skills]] | 2 |",
+                      (snap / "claude-code-inventory.md").read_text(encoding="utf-8"))
+        # The cache is shared at the main folder, not duplicated per project.
+        self.assertTrue((self.out / ".ventry-cache.json").is_file())
+        self.assertFalse((snap / ".ventry-cache.json").exists())
+
+    def test_without_per_project_no_snapshot_is_written(self):
+        self.run_build()
+        self.assertFalse((self.out / "projects").exists())
+
     def test_notes_use_lf_line_endings(self):
         self.run_build()
         self.assertNotIn(b"\r\n", (self.out / "claude-code-inventory.md").read_bytes())
@@ -607,6 +631,23 @@ class TestThrottle(FakeClaude):
     def test_old_run_is_not_skipped(self):
         write(self.root / ".last-run", str(int(time.time()) - ventry.THROTTLE_SECONDS - 60))
         self.assertFalse(ventry.should_skip(self.root))
+
+    def test_project_slug_is_stable_and_keeps_same_named_projects_apart(self):
+        a = self.root / "one" / "app"
+        b = self.root / "two" / "app"
+        a.mkdir(parents=True)
+        b.mkdir(parents=True)
+        self.assertEqual(ventry.project_slug(a), ventry.project_slug(a))
+        self.assertNotEqual(ventry.project_slug(a), ventry.project_slug(b))
+        self.assertTrue(ventry.project_slug(a).startswith("app-"))
+        self.assertTrue(ventry.project_slug(self.root / "My Project!").startswith("My-Project-"))
+
+    def test_throttle_is_per_project_with_per_project(self):
+        out = self.root / "out"
+        args = argparse.Namespace(out=str(out), cwd=str(self.cwd), per_project=True)
+        self.assertEqual(ventry.throttle_dir(args), out / "projects" / ventry.project_slug(self.cwd))
+        args.per_project = False
+        self.assertEqual(ventry.throttle_dir(args), out)
 
     def test_garbage_last_run_is_not_skipped(self):
         write(self.root / ".last-run", "not a number")

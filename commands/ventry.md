@@ -1,7 +1,7 @@
 ---
 description: Export an inventory of your hooks, plugins, MCP servers and skills (with usage counts) to markdown
 allowed-tools: Bash(python3:*), Bash(python:*)
-argument-hint: "[--out DIR] [--no-usage]"
+argument-hint: "[--out DIR] [--no-usage] [--per-project]"
 ---
 
 Run the ventry export and summarise the result for me.

@@ -21,6 +21,7 @@ Design rules that explain many choices below:
   - SessionStart hook output goes into Claude's context, so --quiet prints nothing.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -588,9 +589,15 @@ def build(args):
     """
     cdir = claude_dir()
     cwd = Path(args.cwd).resolve()
-    # Output folder: --out, else $VENTRY_OUT, else <claude dir>/ventry.
-    out_dir = Path(args.out).expanduser() if args.out else Path(os.environ.get("VENTRY_OUT", cdir / "ventry")).expanduser()
+    out_dir = out_root(args)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Where to write: always the main folder (latest overall view). With
+    # --per-project, also a snapshot folder for this project, whose links point
+    # inside that folder so they never open the main folder's notes.
+    targets = [(out_dir, "")]
+    if getattr(args, "per_project", False):
+        slug = project_slug(cwd)
+        targets.append((out_dir / "projects" / slug, "projects/" + slug + "/"))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # --- 1. inventory: what is installed ---
@@ -688,29 +695,71 @@ def build(args):
         unused_md = table(["kind", "name", "source"], unused)
     else:
         unused_md = "_nothing installed-but-unused found_\n"
-    # The summary note links to the others with [[wikilinks]] (Obsidian syntax).
-    idx = (
-        "Setup snapshot for `" + str(cwd) + "`.\n\n"
-        f"| area | count |\n|---|---|\n| [[plugins]] | {len(prow)} |\n| [[hooks]] | {len(hrow)} |\n"
-        f"| [[mcp-servers]] | {len(mrow)} |\n| [[skills]] | {len(srow)} |\n| [[commands]] | {len(crow)} |\n| [[agents]] | {len(arow)} |\n\n"
-        "## Installed but never used\n\n" + unused_md +
-        "\n_Prune candidates only. Unused here may just mean not used in the transcripts that still exist on disk._\n"
-    )
-    files[SUMMARY_NOTE] = note("Claude Code inventory", "index", now, idx, {"ventry_version": VERSION})
+    counts = [("plugins", len(prow)), ("hooks", len(hrow)), ("mcp-servers", len(mrow)),
+              ("skills", len(srow)), ("commands", len(crow)), ("agents", len(arow))]
+
+    def summary(prefix):
+        # The summary note links to the others with [[wikilinks]] (Obsidian
+        # syntax). A project snapshot uses path links, [[projects/<slug>/hooks\|hooks]]
+        # (the backslash keeps the alias pipe from splitting the table cell).
+        def link(n):
+            return f"[[{prefix}{n}\\|{n}]]" if prefix else f"[[{n}]]"
+        rows = "".join(f"| {link(n)} | {c} |\n" for n, c in counts)
+        idx = (
+            "Setup snapshot for `" + str(cwd) + "`.\n\n"
+            "| area | count |\n|---|---|\n" + rows + "\n"
+            "## Installed but never used\n\n" + unused_md +
+            "\n_Prune candidates only. Unused here may just mean not used in the transcripts that still exist on disk._\n"
+        )
+        return note("Claude Code inventory", "index", now, idx, {"ventry_version": VERSION})
+
     # Never overwrite a file ventry did not write (for example your own note
-    # in an Obsidian vault). Check all files first, so nothing is half-written.
-    for name in files:
-        target = out_dir / name
-        if target.exists() and not is_ventry_note(target):
-            raise RuntimeError(f"refusing to overwrite {target}: it is not a ventry note")
-    # newline="\n" keeps line endings the same on Windows and Linux. open() is
-    # used instead of Path.write_text(newline=...), which needs Python 3.10.
-    for name, text in files.items():
-        with open(out_dir / name, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-    # Record when we last ran; should_skip() reads this for the --quiet throttle.
-    (out_dir / ".last-run").write_text(str(int(time.time())), encoding="utf-8")
-    return out_dir, {k.replace(".md", ""): None for k in files}, len(unused)
+    # in an Obsidian vault). Check every target first, so nothing is half-written.
+    for folder, _ in targets:
+        for name in list(files) + [SUMMARY_NOTE]:
+            target = folder / name
+            if target.exists() and not is_ventry_note(target):
+                raise RuntimeError(f"refusing to overwrite {target}: it is not a ventry note")
+    for folder, prefix in targets:
+        folder.mkdir(parents=True, exist_ok=True)
+        # newline="\n" keeps line endings the same on Windows and Linux. open() is
+        # used instead of Path.write_text(newline=...), which needs Python 3.10.
+        for name, text in list(files.items()) + [(SUMMARY_NOTE, summary(prefix))]:
+            with open(folder / name, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        # Record when we last ran; should_skip() reads this for the --quiet throttle.
+        (folder / ".last-run").write_text(str(int(time.time())), encoding="utf-8")
+    return out_dir, [folder for folder, _ in targets], len(unused)
+
+
+def out_root(args):
+    """Main output folder: --out, else $VENTRY_OUT, else <claude dir>/ventry."""
+    if args.out:
+        return Path(args.out).expanduser()
+    return Path(os.environ.get("VENTRY_OUT", claude_dir() / "ventry")).expanduser()
+
+
+def project_slug(cwd):
+    """Folder name for a project snapshot: <folder name>-<6-char hash of its path>.
+
+    The hash keeps two projects with the same folder name (for example two
+    folders called "app") apart. Same project, same slug, on every run.
+    """
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(cwd).name).strip("-.") or "project"
+    digest = hashlib.sha1(os.path.normcase(str(Path(cwd).resolve())).encode("utf-8")).hexdigest()[:6]
+    return f"{name}-{digest}"
+
+
+def throttle_dir(args):
+    """Folder whose .last-run decides the --quiet throttle.
+
+    With --per-project each project has its own 6 hour timer, so opening a new
+    project refreshes its snapshot straight away.
+    """
+    root = out_root(args)
+    if getattr(args, "per_project", False):
+        return root / "projects" / project_slug(Path(args.cwd))
+    return root
 
 
 def is_ventry_note(path):
@@ -753,14 +802,15 @@ def main():
     ap.add_argument("--cwd", default=os.getcwd(), help="project dir to inspect")
     ap.add_argument("--no-usage", action="store_true", help="skip transcript scan")
     ap.add_argument("--quiet", action="store_true", help="hook mode: silent, throttled, detached")
+    ap.add_argument("--per-project", action="store_true",
+                    help="also write a snapshot for this project to <out>/projects/<project>-<id>/")
     # Internal flag: marks the background copy so it does the work itself
     # instead of launching yet another copy. Hidden from --help.
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     if args.quiet and not args.worker:
-        out_dir = Path(args.out).expanduser() if args.out else Path(os.environ.get("VENTRY_OUT", claude_dir() / "ventry")).expanduser()
-        if should_skip(out_dir):
+        if should_skip(throttle_dir(args)):
             return 0  # refreshed recently: do nothing
         # Relaunch this same script as a background worker, passing the options on.
         cmd = [sys.executable, os.path.abspath(__file__), "--worker", "--quiet", "--cwd", args.cwd]
@@ -768,6 +818,8 @@ def main():
             cmd += ["--out", args.out]
         if args.no_usage:
             cmd.append("--no-usage")
+        if args.per_project:
+            cmd.append("--per-project")
         # Detach from the console: no input, and any output is thrown away.
         kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         if os.name == "nt":
@@ -785,7 +837,7 @@ def main():
 
     # Normal run, or the background worker: do the real work.
     try:
-        out_dir, _, n_unused = build(args)
+        out_dir, folders, n_unused = build(args)
     except Exception as e:
         if not args.quiet:
             print(f"ventry: failed: {e}", file=sys.stderr)
@@ -793,6 +845,8 @@ def main():
         return 0 if args.quiet else 1
     if not args.quiet:
         print(f"ventry: wrote notes to {out_dir}")
+        for extra in folders[1:]:
+            print(f"ventry: project snapshot in {extra}")
         if args.no_usage:
             print("ventry: usage scan skipped (--no-usage)")
         else:
