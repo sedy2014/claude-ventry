@@ -745,8 +745,11 @@ def project_slug(cwd):
     The hash keeps two projects with the same folder name (for example two
     folders called "app") apart. Same project, same slug, on every run.
     """
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(cwd).name).strip("-.") or "project"
-    digest = hashlib.sha1(os.path.normcase(str(Path(cwd).resolve())).encode("utf-8")).hexdigest()[:6]
+    # Resolve first, so ".", "..", relative paths and symlinks give the same
+    # slug for the build (resolved cwd) and the throttle check (raw --cwd).
+    p = Path(cwd).resolve()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", p.name).strip("-.") or "project"
+    digest = hashlib.sha1(os.path.normcase(str(p)).encode("utf-8")).hexdigest()[:6]
     return f"{name}-{digest}"
 
 

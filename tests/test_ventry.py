@@ -642,6 +642,16 @@ class TestThrottle(FakeClaude):
         self.assertTrue(ventry.project_slug(a).startswith("app-"))
         self.assertTrue(ventry.project_slug(self.root / "My Project!").startswith("My-Project-"))
 
+    def test_relative_cwd_gives_the_same_slug_as_the_resolved_path(self):
+        old = os.getcwd()
+        os.chdir(self.cwd)
+        try:
+            self.assertEqual(ventry.project_slug(Path(".")), ventry.project_slug(self.cwd))
+            self.assertEqual(ventry.project_slug(Path("..") / self.cwd.name), ventry.project_slug(self.cwd))
+            self.assertTrue(ventry.project_slug(Path(".")).startswith(self.cwd.name + "-"))
+        finally:
+            os.chdir(old)
+
     def test_throttle_is_per_project_with_per_project(self):
         out = self.root / "out"
         args = argparse.Namespace(out=str(out), cwd=str(self.cwd), per_project=True)
